@@ -1,0 +1,53 @@
+---The current version:1.0---
+Author: Yu Wang
+From:UNSW Australia
+Email:yu.wang1@unsw.edu.au
+Copyright reserved
+_____________________________
+
+
+
+Goal To Achieve: 
+Dynamically Changing Buffer Size or Queue Size to Achieve Better Video or Gaming Quality
+
+1. Setup a simple mininet Topology
+2. Congest with TCP traffic
+3. Adjust queues and buffers
+4. Plot graphical results 
+
+
+-----------------------------------------------
+Topology:
+
+	Whole Topology:
+	PC1 -- Internet -- Mininet -- PC2
+	Mininet Topology:
+	
+                  ---Mininet---
+                 |   h1    h2  |
+		 |   |     |   |
+		 |   |	   |   |	
+	Internet-|-- S1 -- S2--|-- PC2
+		 |         |   |
+                 |        DHCP |
+                 |        HOST |
+                 |_____________|
+-----------------------------------------------
+
+Updates: 
+1. --Combined Nat.py and Hwintf.py 
+   --Added a simple LinearTopo
+   --Added a host to the lastswitch running a DHCP server
+   --Set bw and max_queue_size to all the links and interfaces in the Mininet
+   --Using HTB for queueing
+
+Key Methods:
+   
+Parameters:
+   Bottleneck link at: S2--PC2
+   Downloading speed: 5Mb/s
+   Outgoing link at: Internet--S1
+   Uploading speed: Haven't set yet
+   Others: 50Mb/s
+
+
