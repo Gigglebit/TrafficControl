@@ -1,12 +1,6 @@
 #!/usr/bin/python
 
 """
-Example to create a Mininet topology and connect it to the internet via NAT
-through eth0 on the host.
-
-Glen Gibb, February 2011
-
-(slight modifications by BL, 5/13)
 """
 import re
 import sys
@@ -17,28 +11,121 @@ from mininet.net import Mininet
 from mininet.link import Intf,TCIntf
 from mininet.util import custom,quietRun,irange,dumpNodeConnections
 from mininet.cli import CLI
-from mininet.node import Node
+from mininet.node import Node,Controller,RemoteController,OVSKernelSwitch
 from mininet.topo import Topo
 from mininet.node import CPULimitedHost
 from mininet.link import TCLink
+
+from subprocess import Popen, PIPE
+from time import sleep, time
+from multiprocessing import Process
+from argparse import ArgumentParser
+
 
 rs_bw=50 #root to switch
 dhs_bw=50#dhcpserver to switch
 ss_bw=50 #switch to switch
 hs_bw=50 #host to switch
 
-connection_bw=5
+c_bw=5
+
+# Parse arguments
+
+parser = ArgumentParser(description="Traffic tests")
+parser.add_argument('--rs_bw', '-RS',
+                    dest="rs_bw",
+                    type=float,
+                    action="store",
+                    help="Bandwidth between root(Internet) and switch1",
+                    required=True)
+
+parser.add_argument('--ss_bw', '-SS',
+                    dest="ss_bw",
+                    type=float,
+                    action="store",
+                    help="Bandwidth between any two switches",
+                    required=True)
+
+parser.add_argument('--dhs_bw', '-DHS',
+                    dest="dhs_bw",
+                    type=float,
+                    action="store",
+                    help="Bandwidth between a dhcp server and a switch",
+                    required=True)
+
+parser.add_argument('--hs_bw', '-HS',
+                    dest="hs_bw",
+                    type=float,
+                    action="store",
+                    help="Bandwidth between hosts and switchs",
+                    required=True)
+
+parser.add_argument('--c_bw', '-C',
+                    dest="c_bw",
+                    type=float,
+                    action="store",
+                    help="Bandwidth between real hosts and switchs",
+                    required=True)
+
+parser.add_argument('--delay',
+                    dest="delay",
+                    type=float,
+                    help="Delay in milliseconds of host links",
+                    default=10)
+
+parser.add_argument('--dir', '-d',
+                    dest="dir",
+                    action="store",
+                    help="Directory to store outputs",
+                    default="results",
+                    required=True)
+
+parser.add_argument('--k',
+                    dest="k",
+                    type=int,
+                    action="store",
+                    help="Fanout (Number of switches)",
+                    required=True)
+
+parser.add_argument('--maxq',
+                    dest="maxq",
+                    action="store",
+                    help="Max buffer size of network interface in packets",
+                    default=100)
+
+parser.add_argument('--cong',
+                    dest="cong",
+                    help="Congestion control algorithm to use",
+                    default="reno")
+
+parser.add_argument('--diff',
+                    help="Enabled differential service", 
+                    action='store_true',
+                    dest="diff",
+                    default=False)
+
+parser.add_argument('--intf',
+                    dest="intf",
+                    type=str,
+                    action="store",
+                    help="Real Interface",
+                    required=True)
+
+
+# Expt parameters
+args = parser.parse_args()
+
 
 
 #################################
 def startNAT( root, inetIntf='eth0', subnet='10.0/8' ):
     """Start NAT/forwarding between Mininet and external network
-    root: node to access iptables from
-    inetIntf: interface for internet access
-    subnet: Mininet subnet (default 10.0/8)="""
+root: node to access iptables from
+inetIntf: interface for internet access
+subnet: Mininet subnet (default 10.0/8)="""
 
     # Identify the interface connecting to the mininet network
-    localIntf =  root.defaultIntf()
+    localIntf = root.defaultIntf()
 
     # Flush any currently active rules
     root.cmd( 'iptables -F' )
@@ -69,9 +156,9 @@ def stopNAT( root ):
 
 def fixNetworkManager( root, intf ):
     """Prevent network-manager from messing with our interface,
-       by specifying manual configuration in /etc/network/interfaces
-       root: a node in the root namespace (for running commands)
-       intf: interface name"""
+by specifying manual configuration in /etc/network/interfaces
+root: a node in the root namespace (for running commands)
+intf: interface name"""
     cfile = '/etc/network/interfaces'
     line = '\niface %s inet manual\n' % intf
     config = open( cfile ).read()
@@ -83,11 +170,11 @@ def fixNetworkManager( root, intf ):
     # hopefully this won't disconnect you
     root.cmd( 'service network-manager restart' )
 
-def connectToInternet( network, switch='s1', rootip='10.254', subnet='10.0/24'):
+def connectToInternet( network,switch='s1', rootip='10.254', subnet='10.0/24'):
     """Connect the network to the internet
-       switch: switch to connect to root namespace
-       rootip: address for interface in root namespace
-       subnet: Mininet subnet"""
+switch: switch to connect to root namespace
+rootip: address for interface in root namespace
+subnet: Mininet subnet"""
     switch = network.get( switch )
     prefixLen = subnet.split( '/' )[ 1 ]
 
@@ -98,7 +185,7 @@ def connectToInternet( network, switch='s1', rootip='10.254', subnet='10.0/24'):
     fixNetworkManager( root, 'root-eth0' )
 
     # Create link between root NS and switch
-    link = network.addLink( root, switch,bw=rs_bw,max_queue_size=100,use_htb=True)
+    link = network.addLink( root, switch,bw=args.rs_bw,max_queue_size=int(args.maxq),use_htb=True)
     link.intf1.setIP( rootip, prefixLen )
     # Start network that now includes link to root namespace
     network.start()
@@ -106,13 +193,10 @@ def connectToInternet( network, switch='s1', rootip='10.254', subnet='10.0/24'):
     # Start NAT and establish forwarding
     startNAT( root )
 
-
     # Setting up DHCP
-
     print "IF 0 ROOT ->" + str(os.getuid())
- 
     out = network.hosts[0].cmd('sudo dhcpd')
-    print "DHCPD = " + out    
+    print "DHCPD = " + out
 
 # Establish routes from end hosts
     for host in network.hosts:
@@ -137,61 +221,58 @@ def checkIntf( intf ):
 class NewTopo(Topo):
    "Linear topology of k switches, with one host per switch."
 
-   def __init__(self, k=2, **opts):
+   def __init__(self, k=2, ss_bw=50, dhs_bw=50, hs_bw=50, 
+                maxq=None, diff=False):
        """Init.
-           k: number of switches (and hosts)
-           hconf: host configuration options
-           lconf: link configuration options"""
-
-       super(NewTopo, self).__init__(**opts)
-
+k: number of switches (and hosts)
+hconf: host configuration options
+lconf: link configuration options"""
+       super(NewTopo, self).__init__()
        self.k = k
-
        dhcp = self.addHost('dhcp')
-
        lastSwitch = None
        for i in irange(1, k):
            host = self.addHost('h%s' % i)
            switch = self.addSwitch('s%s' % i)
-           self.addLink(host,switch,bw=hs_bw, max_queue_size=100, use_htb=True)
+           self.addLink(host,switch,bw=hs_bw, max_queue_size=int(maxq), use_htb=True)
            if lastSwitch:
-               self.addLink(switch,lastSwitch,bw=ss_bw, max_queue_size=100, use_htb=True)
-           lastSwitch = switch
-       self.addLink(dhcp,switch,bw=dhs_bw, max_queue_size = 100, use_htb=True)
+               self.addLink(switch,lastSwitch,bw=ss_bw, max_queue_size=int(maxq), use_htb=True)
+	   lastSwitch = switch
+       self.addLink(dhcp,switch,bw=dhs_bw, max_queue_size =int(maxq), use_htb=True)
+
 
 topos = { 'mytopo': ( lambda: NewTopo() ) }
 
 
 
 if __name__ == '__main__':
-    lg.setLogLevel( 'debug')
+    lg.setLogLevel( 'info')
 
     # try to get hw intf from the command line; by default, use eth1
-    intfName = sys.argv[ 1 ] if len( sys.argv ) > 1 else 'eth1'
+    # intfName = sys.argv[ 1 ] if len( sys.argv ) > 1 else 'eth1'
+    intfName = args.intf
     info( '*** Connecting to hw intf: %s' % intfName )
 
     info( '*** Checking', intfName, '\n' )
     checkIntf( intfName )
 
     info( '*** Creating network\n' )
-    topo = NewTopo(k=2)
+    topo = NewTopo(k=args.k,ss_bw=args.ss_bw,dhs_bw=args.dhs_bw,hs_bw=args.hs_bw,
+                   maxq=args.maxq,diff=args.diff)
     net = Mininet(topo = topo, host = CPULimitedHost, link=TCLink)
 
     switch = net.switches[ 1 ]
     info( '*** Adding hardware interface', intfName, 'to switch',
           switch.name, '\n' )
-    _intf = TCIntf( intfName, node=switch ,bw=connection_bw,max_queue_size=100)
+    _intf = TCIntf( intfName, node=switch ,bw=args.c_bw,max_queue_size=int(args.maxq))
     info( '*** Note: you may need to reconfigure the interfaces for '
-          'the Mininet hosts:\n', net.hosts, '\n' )
+         'the Mininet hosts:\n', net.hosts, '\n' )
     
-    #    _intf.config(bw=connection_bw,max_queue_size=100)    
-    print "\nhaha\n" 
+    print "\nhaha\n"
     print _intf
-    print "\nhaha\n" 
-    #_tcinf.config(bw=5)
+    print "\nhaha\n"
 
-
-    # net = TreeNet( depth=1, fanout=4 )
+    net.addController('c0',controller=RemoteController,ip='149.171.37.125')
     # Configure and start NATted connectivity
     rootnode = connectToInternet( net )
     print "*** Hosts are running and should have internet connectivity"
@@ -201,6 +282,6 @@ if __name__ == '__main__':
     net.hosts[0].cmd('killall -9 dhcpd')
     stopNAT( rootnode )
     net.stop()
-
+    Popen("killall -9 cat", shell=True).wait()
 
 
